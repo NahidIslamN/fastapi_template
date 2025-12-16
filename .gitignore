@@ -1,0 +1,3 @@
+**/__pycache__/
+.env
+main_db.sqlite3

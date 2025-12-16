@@ -1,0 +1,19 @@
+pip install --upgrade pip
+
+pip install -U -r requirements.txt
+
+python -c "import secrets; print(secrets.token_hex(32))"
+
+python create_tables.py
+
+celery -A celery_app worker -B --loglevel=info
+
+uvicorn main:app --reload
+
+
+############################### git #################################
+
+rm -rf .git
+ls -a
+git status
+fatal: not a git repository
