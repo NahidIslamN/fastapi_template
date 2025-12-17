@@ -2,7 +2,6 @@ from fastapi import APIRouter, status, Depends, HTTPException, Form, UploadFile,
 import os
 from core.permissions import IsAuthenticated, IsAdmin
 from apps.auth.serializers import (
-    SignupRequest, 
     OtpVerificationRequest, 
     Signin_Request, 
     SigninResponse, 
@@ -58,7 +57,7 @@ async def signup(
         if existing_user.is_verified == False:
             existing_user.name = name
             existing_user.password_hash = get_password_hash(password)
-            if existing_user.image and image:
+            if existing_user.image and image is not None:
                 await delete_user_image(existing_user.image)
             file_name = await generate_unique_hash(length=15)
             image_path = None
