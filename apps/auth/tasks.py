@@ -1,6 +1,6 @@
 from celery_app import celery_app
 from core.email_utils import send_verification_code_email
-from db import AsyncSessionLocal  # Import the session factory directly instead of get_db
+from core.db import AsyncSessionLocal  # Import the session factory directly instead of get_db
 import asyncio
 
 @celery_app.task(bind=True)

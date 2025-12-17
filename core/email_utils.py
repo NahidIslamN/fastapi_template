@@ -4,11 +4,11 @@ from email.message import EmailMessage
 from datetime import timedelta
 from core.config import settings
 import random
-from db import get_db
+from core.db import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import Depends, HTTPException
 from sqlalchemy import select
-from models import User
+from core.models import User
 from pydantic import BaseModel
 
 

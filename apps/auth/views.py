@@ -1,5 +1,6 @@
-from fastapi import APIRouter, status, Depends, HTTPException, Form, UploadFile, File, Response
+from fastapi import APIRouter, status, Depends, HTTPException, Form, UploadFile, File, Response, Request
 import os
+from core.permissions import IsAuthenticated, IsAdmin
 from apps.auth.serializers import (
     SignupRequest, 
     OtpVerificationRequest, 
@@ -12,18 +13,18 @@ from apps.auth.serializers import (
 )
 from core.config import settings
 
-from db import get_db
+from core.db import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from models import User
+from core.models import User
 from core.base_auths import (
-    get_current_user,
     get_password_hash,
     otp_varification,
     authenticate_user,
     create_access_token,
     create_refresh_token,
-    verify_password
+    verify_password,
+    get_user_by_id,
 )
 
 
@@ -135,7 +136,6 @@ async def user_signin(signin_data: Signin_Request, response: Response, db: Async
         access_token = create_access_token(subject=str(user.id))
         refresh_token = create_refresh_token(subject=str(user.id))
         
-        # ✅ Correct way: use the 'response' instance
         response.set_cookie(
             key="refresh_token",
             value=refresh_token,
@@ -195,36 +195,46 @@ async def otp_verification(vf_data:OtpVerificationRequest, db:AsyncSession=Depen
 @auth_router.post('/reset_passsword/', status_code=status.HTTP_200_OK)
 async def reset_password(
     reset_data: ResetPasswordRequest,
-    current_user: User = Depends(get_current_user),
-    db:AsyncSession=Depends(get_db)
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(IsAuthenticated),
+    
     ):
-
-    current_user.password_hash = get_password_hash(reset_data.new_password)
+    user = await get_user_by_id(db=db, id=request.state.user.id)
+   
+    user.password_hash = get_password_hash(reset_data.new_password)
     await db.commit()
-    await db.refresh(current_user)
     return {
         "success": True,
         "message": "Password reset successfully!",
     }
 
-
-
-@auth_router.post('/chage_password/', status_code=status.HTTP_200_OK)
+@auth_router.post("/chage_password/", status_code=status.HTTP_200_OK)
 async def change_password(
     change_data: ChangePasswordRequest,
-    current_user: User = Depends(get_current_user),
-    db:AsyncSession=Depends(get_db)
-    ):
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(IsAdmin),
+):
+    user = await get_user_by_id(db=db, id=request.state.user.id)
 
-    is_valid_pass = verify_password(plain_password=change_data.old_password, hashed_password=current_user.password_hash)
-    if is_valid_pass:
-        current_user.password_hash = get_password_hash(change_data.new_password)
-        await db.commit()
-        
-        await db.refresh(current_user)
-        return{
-            "success":True,
-            "message":"Password Change Successfull"
-        }
-    else:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="wrong old password !")
+    is_valid_pass = verify_password(
+        plain_password=change_data.old_password,
+        hashed_password=user.password_hash,
+    )
+
+    if not is_valid_pass:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Wrong old password!",
+        )
+
+    user.password_hash = get_password_hash(change_data.new_password)
+
+    await db.commit()
+
+    return {
+        "success": True,
+        "message": "Password Change Successful",
+    }
+
