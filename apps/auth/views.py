@@ -1,4 +1,4 @@
-from fastapi import APIRouter, status, Depends, HTTPException, Form, UploadFile, File
+from fastapi import APIRouter, status, Depends, HTTPException, Form, UploadFile, File, Response
 import os
 from apps.auth.serializers import (
     SignupRequest, 
@@ -10,6 +10,7 @@ from apps.auth.serializers import (
     ResetPasswordRequest,
     ChangePasswordRequest,
 )
+from core.config import settings
 
 from db import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,7 +57,7 @@ async def signup(
         if existing_user.is_verified == False:
             existing_user.name = name
             existing_user.password_hash = get_password_hash(password)
-            if existing_user.image:
+            if existing_user.image and image:
                 await delete_user_image(existing_user.image)
             file_name = await generate_unique_hash(length=15)
             image_path = None
@@ -68,16 +69,14 @@ async def signup(
             existing_user.image = image_path
             await db.commit()
             await db.refresh(existing_user )
-            # PROBLEM: send_code_to_email.delay() returns an AsyncResult object.
-            # AsyncResult is NOT a coroutine and CANNOT be awaited.
-            # Celery tasks are executed in a task queue, not as async functions.
-            # When you call .delay(), the task is immediately queued and returns right away.
-            # SOLUTION: Remove 'await' - just call .delay() and let Celery handle it asynchronously
-            send_code_to_email.delay(email=existing_user.email)  # Fire and forget - task queued
-            raise HTTPException(status_code=200, detail="User creted successfull!")
+            send_code_to_email.delay(email=existing_user.email) 
+            return {
+                "success":True,
+                "message":"User creted successfull!"
+            }
+        
         raise HTTPException(status_code=400, detail="Email already registered")
     hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-
 
     image_path = None
     if image:
@@ -86,14 +85,12 @@ async def signup(
         with open(image_path, "wb") as buffer:
             shutil.copyfileobj(image.file, buffer)
 
-
     new_user = User(
         name=name,
         email=email,
         password_hash=hashed_password,
         image=image_path
     )
-
 
     send_code_to_email.delay(email=email)
 
@@ -104,3 +101,130 @@ async def signup(
         "success":True,
         "message":"User creted successfull!"
     }
+
+
+@auth_router.post('/email-varification/', status_code=status.HTTP_200_OK )
+async def email_verification(vf_data:OtpVerificationRequest, db:AsyncSession=Depends(get_db)):
+
+    user = await otp_varification(db=db, email=vf_data.email, otp=vf_data.otp )
+    if user == None:
+        raise HTTPException(status_code=status.HTTP_200_OK, detail="user not found with this email !")
+    if user == False:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Wrong verification code !")
+    
+    if user:
+        user.is_verified = True
+        await db.commit()
+        await db.refresh(user)
+        return {
+            "success":True,
+            "message":"Verification Successsfull!"
+        }
+    else:
+        pass
+
+
+
+
+@auth_router.post('/signin/', status_code=status.HTTP_200_OK, response_model=SigninResponse)
+async def user_signin(signin_data: Signin_Request, response: Response, db: AsyncSession = Depends(get_db)):
+
+    user = await authenticate_user(db=db, email=signin_data.email, password=signin_data.password)
+    
+    if user is not None and user.is_verified:
+        access_token = create_access_token(subject=str(user.id))
+        refresh_token = create_refresh_token(subject=str(user.id))
+        
+        # ✅ Correct way: use the 'response' instance
+        response.set_cookie(
+            key="refresh_token",
+            value=refresh_token,
+            httponly=True,            
+            samesite="strict",        
+            secure=True,              
+            max_age=60*60*24*settings.REFRESH_TOKEN_EXPIRE_DAYS
+        )
+
+        return {
+            "success": True,
+            "message": "Login Success!",
+            "access_token": access_token,
+            "user": user
+        }
+    
+    elif user is not None and not user.is_verified:
+        send_code_to_email.delay(email=user.email)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Check your email and get verified first!")
+    
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email or password is invalid!")
+
+
+@auth_router.post('/forget-password/', status_code=status.HTTP_200_OK)
+async def forget_password(forget_pass:Forget_Request):
+
+    send_code_to_email.delay(email=forget_pass.email)
+    return {
+        "message":"An otp sent to your email. verify and reset your password"
+    }
+
+
+
+@auth_router.post('/otp-varification/', status_code=status.HTTP_200_OK, response_model=OtpVerificationResoponse)
+async def otp_verification(vf_data:OtpVerificationRequest, db:AsyncSession=Depends(get_db)):
+    user = await otp_varification(db=db, email=vf_data.email, otp=vf_data.otp )
+    if user == None:
+        raise HTTPException(status_code=status.HTTP_200_OK, detail="user not found with this email !")
+    if user == False:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Wrong verification code !")
+    
+    if user:
+        access_token = create_access_token(subject=str(user.id), expires_delta=timedelta(minutes=5))
+        
+        return{
+            "success":True,
+            "message":"reset your passwor before 5 munite!",
+            "access_token":access_token,
+            "user":user
+        }
+    else:
+        pass
+
+
+
+@auth_router.post('/reset_passsword/', status_code=status.HTTP_200_OK)
+async def reset_password(
+    reset_data: ResetPasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db:AsyncSession=Depends(get_db)
+    ):
+
+    current_user.password_hash = get_password_hash(reset_data.new_password)
+    await db.commit()
+    await db.refresh(current_user)
+    return {
+        "success": True,
+        "message": "Password reset successfully!",
+    }
+
+
+
+@auth_router.post('/chage_password/', status_code=status.HTTP_200_OK)
+async def change_password(
+    change_data: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db:AsyncSession=Depends(get_db)
+    ):
+
+    is_valid_pass = verify_password(plain_password=change_data.old_password, hashed_password=current_user.password_hash)
+    if is_valid_pass:
+        current_user.password_hash = get_password_hash(change_data.new_password)
+        await db.commit()
+        
+        await db.refresh(current_user)
+        return{
+            "success":True,
+            "message":"Password Change Successfull"
+        }
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="wrong old password !")

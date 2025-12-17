@@ -32,7 +32,6 @@ class SigninResponse(BaseModel):
     success:bool
     message:str
     access_token:str
-    refresh_token:str
     user:UserOut
 
 class OtpVerificationResoponse(BaseModel):
